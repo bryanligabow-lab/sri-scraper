@@ -1,0 +1,15 @@
+{
+  "name": "sri-scraper",
+  "version": "1.0.0",
+  "description": "Scraper automatizado para descargar facturas del SRI Ecuador",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "login": "node login-manual.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "playwright": "^1.52.0"
+  }
+}
