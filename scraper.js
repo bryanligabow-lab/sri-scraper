@@ -222,7 +222,7 @@ async function descargarFacturas(anio, mes) {
 
     // 4. Click en "Descargar reporte"
     console.log('  Buscando link "Descargar reporte"...');
-    const linkReporte = page.locator('a:has-text("Descargar reporte"), a:has-text("Descargar"), [id*="lnkDescargar"]').first();
+    const linkReporte = page.locator('#frmPrincipal\\:lnkTxtlistado, a[id="frmPrincipal:lnkTxtlistado"]').first();
 
     if (await linkReporte.count() > 0) {
       console.log('  Descargando reporte...');
