@@ -341,23 +341,88 @@ async function descargarFacturas(anio, mes) {
         };
       }
 
-      console.log('  Descargando reporte (ejecutando onclick nativo)...');
+      console.log('  Descargando reporte (múltiples clicks + captura HTTP)...');
 
-      // Ejecutar el onclick nativo del link para disparar el form submit JSF
-      const [dl] = await Promise.all([
-        page.waitForEvent('download', { timeout: 60000 }).catch(() => null),
-        page.evaluate(() => {
-          const link = document.getElementById('frmPrincipal:lnkTxtlistado');
-          if (link) {
-            // Ejecutar el onclick nativo que hace el form submit de JSF
-            if (link.onclick) {
-              link.onclick();
-            } else {
-              link.click();
+      // Interceptar cualquier response HTTP que contenga archivo (Excel/XLS/Zip)
+      let responseCapturada = null;
+      const responseHandler = async (response) => {
+        const headers = response.headers();
+        const contentType = (headers['content-type'] || '').toLowerCase();
+        const contentDisp = (headers['content-disposition'] || '').toLowerCase();
+        if (
+          contentDisp.includes('attachment') ||
+          contentDisp.includes('filename') ||
+          contentType.includes('excel') ||
+          contentType.includes('spreadsheet') ||
+          contentType.includes('ms-excel') ||
+          contentType.includes('vnd.ms') ||
+          contentType.includes('octet-stream') ||
+          contentType.includes('application/zip')
+        ) {
+          console.log(`    Response capturada: ${response.url().substring(0, 100)}`);
+          console.log(`      content-type: ${contentType}, disposition: ${contentDisp.substring(0, 80)}`);
+          try {
+            const body = await response.body();
+            if (body && body.length > 100) {
+              responseCapturada = { body, contentType, contentDisp, url: response.url() };
+              console.log(`      body capturado: ${(body.length / 1024).toFixed(1)}KB`);
             }
+          } catch (e) {
+            console.log('      Error leyendo body:', e.message);
           }
-        }).catch(e => console.log('    Error ejecutando onclick:', e.message)),
-      ]);
+        }
+      };
+      page.on('response', responseHandler);
+
+      // Hacer 3 clicks seguidos con diferentes métodos para asegurar que funcione
+      let dl = null;
+      for (let intento = 1; intento <= 3 && !dl && !responseCapturada; intento++) {
+        console.log(`    Intento ${intento}/3...`);
+
+        const [download] = await Promise.all([
+          page.waitForEvent('download', { timeout: 20000 }).catch(() => null),
+          (async () => {
+            if (intento === 1) {
+              // Intento 1: Click directo de Playwright
+              await linkReporte.click({ force: true }).catch(e => console.log('    Error click playwright:', e.message));
+            } else if (intento === 2) {
+              // Intento 2: dispatchEvent con MouseEvent
+              await page.evaluate(() => {
+                const link = document.getElementById('frmPrincipal:lnkTxtlistado');
+                if (!link) return;
+                const event = new MouseEvent('click', { view: window, bubbles: true, cancelable: true, button: 0 });
+                link.dispatchEvent(event);
+              }).catch(e => console.log('    Error dispatchEvent:', e.message));
+            } else {
+              // Intento 3: Ejecutar mojarra.jsfcljs directamente
+              await page.evaluate(() => {
+                const form = document.getElementById('frmPrincipal');
+                if (window.mojarra && form) {
+                  window.mojarra.jsfcljs(form, { 'frmPrincipal:lnkTxtlistado': 'frmPrincipal:lnkTxtlistado' }, '');
+                }
+              }).catch(e => console.log('    Error mojarra:', e.message));
+            }
+          })(),
+        ]);
+
+        if (download) {
+          dl = download;
+          console.log(`    ✓ Descarga detectada en intento ${intento}`);
+          break;
+        }
+
+        if (responseCapturada) {
+          console.log(`    ✓ Response capturada en intento ${intento}`);
+          break;
+        }
+
+        await page.waitForTimeout(2000);
+      }
+
+      page.off('response', responseHandler);
+
+      // Guardar el archivo desde cualquiera de los dos métodos
+      let archivoGuardado = false;
 
       if (dl) {
         const ruta = await dl.path();
@@ -373,11 +438,31 @@ async function descargarFacturas(anio, mes) {
             mimeType: ext === 'pdf' ? 'application/pdf' : ext === 'xml' ? 'application/xml' : 'application/vnd.ms-excel',
             info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
           });
-
-          console.log(`  Reporte descargado: ${nombre} (${(contenido.length / 1024).toFixed(1)}KB)`);
+          console.log(`  ✓ Reporte descargado (download): ${nombre} (${(contenido.length / 1024).toFixed(1)}KB)`);
+          archivoGuardado = true;
         }
-      } else {
-        console.log('  No se inició descarga del reporte. Tomando screenshot...');
+      }
+
+      if (!archivoGuardado && responseCapturada) {
+        // Extraer nombre del content-disposition
+        let nombre = `reporte_facturas_${anio}_${String(mes).padStart(2, '0')}.xls`;
+        const matchNombre = responseCapturada.contentDisp.match(/filename[*]?=["']?([^"';]+)/i);
+        if (matchNombre) nombre = matchNombre[1].replace(/['"]/g, '');
+
+        const ext = nombre.split('.').pop().toLowerCase();
+        facturas.push({
+          nombre,
+          contenido: responseCapturada.body.toString('base64'),
+          tipo: ext,
+          mimeType: responseCapturada.contentType || 'application/vnd.ms-excel',
+          info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
+        });
+        console.log(`  ✓ Reporte guardado (HTTP response): ${nombre} (${(responseCapturada.body.length / 1024).toFixed(1)}KB)`);
+        archivoGuardado = true;
+      }
+
+      if (!archivoGuardado) {
+        console.log('  ✗ No se pudo descargar el reporte. Screenshot...');
         await page.screenshot({ path: '/tmp/sri-no-descarga.png', fullPage: true }).catch(() => {});
       }
     } else {
