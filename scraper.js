@@ -408,20 +408,33 @@ async function descargarFacturas(anio, mes) {
         const viewState = form.querySelector('input[name="javax.faces.ViewState"]');
         if (!viewState) return { ok: false, error: 'ViewState no encontrado' };
 
-        // Recoger todos los datos del form
-        const formData = new FormData(form);
+        // Usar URLSearchParams (application/x-www-form-urlencoded) en vez de FormData
+        // JSF submit tradicional usa urlencoded, no multipart
+        const params = new URLSearchParams();
+        const inputs = form.querySelectorAll('input, select, textarea');
+        inputs.forEach(input => {
+          if (input.name && input.type !== 'submit') {
+            if (input.type === 'checkbox' || input.type === 'radio') {
+              if (input.checked) params.append(input.name, input.value);
+            } else {
+              params.append(input.name, input.value || '');
+            }
+          }
+        });
         // Agregar el parámetro que identifica qué link se clickeó
-        formData.append('frmPrincipal:lnkTxtlistado', 'frmPrincipal:lnkTxtlistado');
+        params.append('frmPrincipal:lnkTxtlistado', 'frmPrincipal:lnkTxtlistado');
 
         const action = form.getAttribute('action') || window.location.href;
 
         try {
-          // NO poner header Faces-Request: partial/ajax, porque eso activaría
-          // respuesta AJAX XML. Queremos un POST normal para que JSF devuelva el archivo.
           const resp = await fetch(action, {
             method: 'POST',
-            body: formData,
+            body: params.toString(),
             credentials: 'include',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+              'Accept': '*/*',
+            },
           });
 
           const contentType = resp.headers.get('content-type') || '';
