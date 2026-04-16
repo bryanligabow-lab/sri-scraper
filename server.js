@@ -11,6 +11,17 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Endpoint de debug - ver screenshots generados
+app.get('/debug/:nombre', (req, res) => {
+  const fs = require('fs');
+  const ruta = `/tmp/sri-${req.params.nombre}.png`;
+  if (fs.existsSync(ruta)) {
+    res.sendFile(ruta);
+  } else {
+    res.status(404).json({ error: 'Screenshot no encontrado', ruta });
+  }
+});
+
 app.post('/descargar-facturas', async (req, res) => {
   const ahora = new Date();
   const anio = req.body.anio || ahora.getFullYear();

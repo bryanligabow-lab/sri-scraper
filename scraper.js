@@ -213,22 +213,74 @@ async function descargarFacturas(anio, mes) {
 
     // 3. Click en Consultar primero
     console.log('  Click en Consultar...');
-    const btnConsultar = page.locator('[id*="frmPrincipal"] button:has-text("Consultar"), button:visible:has-text("Consultar")').first();
-    if (await btnConsultar.count()) {
-      await btnConsultar.click();
-      await page.waitForTimeout(8000);
-      console.log('  Consulta ejecutada');
+    const selectoresConsultar = [
+      'a#frmPrincipal\\:btnRecaptcha',
+      'a[id="frmPrincipal:btnRecaptcha"]',
+      '[id*="btnRecaptcha"]',
+      '[id*="frmPrincipal"] button:has-text("Consultar")',
+      '[id*="frmPrincipal"] a:has-text("Consultar")',
+      'button:visible:has-text("Consultar")',
+      'a:visible:has-text("Consultar")',
+      'input[value="Consultar"]:visible',
+    ];
+
+    let consultaHecha = false;
+    for (const sel of selectoresConsultar) {
+      const btn = page.locator(sel).first();
+      if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
+        console.log(`    Usando selector: ${sel}`);
+        await btn.click();
+        await page.waitForTimeout(10000);
+        consultaHecha = true;
+        break;
+      }
+    }
+
+    if (!consultaHecha) {
+      console.log('  NO se encontró botón Consultar. Tomando screenshot...');
+      await page.screenshot({ path: '/tmp/sri-no-consultar.png', fullPage: true }).catch(() => {});
+      // Intentar listar todos los botones/links visibles
+      const elementos = await page.evaluate(() => {
+        const result = [];
+        document.querySelectorAll('button, a, input[type="submit"], input[type="button"]').forEach(el => {
+          const text = (el.innerText || el.value || '').trim().substring(0, 50);
+          if (text && el.offsetWidth > 0) {
+            result.push({ tag: el.tagName, id: el.id, text, visible: el.offsetWidth > 0 });
+          }
+        });
+        return result.slice(0, 20);
+      }).catch(() => []);
+      console.log('  Elementos visibles:', JSON.stringify(elementos, null, 2));
+    } else {
+      console.log('  Consulta ejecutada, esperando resultados...');
     }
 
     // 4. Click en "Descargar reporte"
     console.log('  Buscando link "Descargar reporte"...');
-    const linkReporte = page.locator('#frmPrincipal\\:lnkTxtlistado, a[id="frmPrincipal:lnkTxtlistado"]').first();
+    const selectoresReporte = [
+      '#frmPrincipal\\:lnkTxtlistado',
+      'a[id="frmPrincipal:lnkTxtlistado"]',
+      'a:has-text("Descargar reporte")',
+      'a:has(p:has-text("Descargar reporte"))',
+      '[id*="lnkTxtlistado"]',
+    ];
 
-    if (await linkReporte.count() > 0) {
+    let linkReporte = null;
+    for (const sel of selectoresReporte) {
+      const l = page.locator(sel).first();
+      const cnt = await l.count();
+      if (cnt > 0) {
+        console.log(`    Encontrado con: ${sel} (${cnt} matches)`);
+        linkReporte = l;
+        break;
+      }
+    }
+
+    if (linkReporte) {
       console.log('  Descargando reporte...');
       const [dl] = await Promise.all([
         page.waitForEvent('download', { timeout: TIMEOUT_DESCARGA }).catch(() => null),
-        linkReporte.click(),
+        linkReporte.click({ force: true }).catch(e => console.log('    Error click:', e.message)),
       ]);
 
       if (dl) {
@@ -249,10 +301,12 @@ async function descargarFacturas(anio, mes) {
           console.log(`  Reporte descargado: ${nombre} (${(contenido.length / 1024).toFixed(1)}KB)`);
         }
       } else {
-        console.log('  No se inició descarga del reporte');
+        console.log('  No se inició descarga del reporte. Tomando screenshot...');
+        await page.screenshot({ path: '/tmp/sri-no-descarga.png', fullPage: true }).catch(() => {});
       }
     } else {
-      console.log('  No se encontró link de Descargar reporte');
+      console.log('  NO se encontró link de Descargar reporte. Tomando screenshot...');
+      await page.screenshot({ path: '/tmp/sri-no-reporte.png', fullPage: true }).catch(() => {});
     }
 
     await page.close();
@@ -264,6 +318,7 @@ async function descargarFacturas(anio, mes) {
     };
   } catch (err) {
     console.error('Error general:', err.message);
+    await page.screenshot({ path: '/tmp/sri-error.png', fullPage: true }).catch(() => {});
     await page.close().catch(() => {});
     return { ok: false, error: 'general', mensaje: err.message };
   }
