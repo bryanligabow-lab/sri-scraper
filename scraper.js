@@ -409,13 +409,12 @@ async function descargarFacturas(anio, mes) {
         const action = form.getAttribute('action') || window.location.href;
 
         try {
+          // NO poner header Faces-Request: partial/ajax, porque eso activaría
+          // respuesta AJAX XML. Queremos un POST normal para que JSF devuelva el archivo.
           const resp = await fetch(action, {
             method: 'POST',
             body: formData,
             credentials: 'include',
-            headers: {
-              'Faces-Request': 'partial/ajax',
-            },
           });
 
           const contentType = resp.headers.get('content-type') || '';
