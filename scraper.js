@@ -277,10 +277,38 @@ async function descargarFacturas(anio, mes) {
     }
 
     if (linkReporte) {
-      console.log('  Descargando reporte...');
+      // Primero verificar si hay resultados en la tabla
+      const hayTabla = await page.locator('[id*="tablaCompRecibidos"] tbody tr, .ui-datatable-data tr').count();
+      console.log(`  Filas en tabla de resultados: ${hayTabla}`);
+
+      if (hayTabla === 0) {
+        console.log('  No hay facturas en el período consultado. Screenshot...');
+        await page.screenshot({ path: '/tmp/sri-sin-resultados.png', fullPage: true }).catch(() => {});
+        await page.close();
+        return {
+          ok: true,
+          facturas,
+          totalArchivos: 0,
+          mensaje: `No hay facturas en ${anio}-${String(mes).padStart(2, '0')}`,
+        };
+      }
+
+      console.log('  Descargando reporte (ejecutando onclick nativo)...');
+
+      // Ejecutar el onclick nativo del link para disparar el form submit JSF
       const [dl] = await Promise.all([
-        page.waitForEvent('download', { timeout: TIMEOUT_DESCARGA }).catch(() => null),
-        linkReporte.click({ force: true }).catch(e => console.log('    Error click:', e.message)),
+        page.waitForEvent('download', { timeout: 60000 }).catch(() => null),
+        page.evaluate(() => {
+          const link = document.getElementById('frmPrincipal:lnkTxtlistado');
+          if (link) {
+            // Ejecutar el onclick nativo que hace el form submit de JSF
+            if (link.onclick) {
+              link.onclick();
+            } else {
+              link.click();
+            }
+          }
+        }).catch(e => console.log('    Error ejecutando onclick:', e.message)),
       ]);
 
       if (dl) {
