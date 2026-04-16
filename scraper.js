@@ -341,11 +341,18 @@ async function descargarFacturas(anio, mes) {
         };
       }
 
-      console.log('  Descargando reporte vía form POST directo...');
+      console.log('  Descargando reporte con múltiples estrategias...');
+
+      // Esperar un poco para que reCAPTCHA y JSF terminen de cargar
+      await page.waitForTimeout(3000);
 
       // Scroll al link para que sea visible
       await linkReporte.scrollIntoViewIfNeeded().catch(() => {});
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1500);
+
+      // Obtener coordenadas del link para click nativo
+      const boundingBox = await linkReporte.boundingBox().catch(() => null);
+      console.log(`    Link bounding box: ${JSON.stringify(boundingBox)}`);
 
       // Registrar TODAS las requests y responses para debug
       const allRequests = [];
@@ -476,29 +483,62 @@ async function descargarFacturas(anio, mes) {
         });
         console.log(`  ✓ Reporte descargado (POST directo): ${nombre} (${(resultadoPost.size / 1024).toFixed(1)}KB)`);
       } else {
-        console.log('  ✗ POST directo falló. Intentando click de Playwright como fallback...');
+        console.log('  ✗ POST directo falló. Probando page.mouse.click con coordenadas reales...');
 
-        // Fallback: click de Playwright con force
-        const [download] = await Promise.all([
-          page.waitForEvent('download', { timeout: 30000 }).catch(() => null),
-          linkReporte.click({ force: true }).catch(e => console.log('    Error click:', e.message)),
-        ]);
+        // Estrategia 2: Click nativo con mouse (trusted event)
+        if (boundingBox) {
+          const cx = boundingBox.x + boundingBox.width / 2;
+          const cy = boundingBox.y + boundingBox.height / 2;
+          console.log(`    Click en (${cx.toFixed(0)}, ${cy.toFixed(0)})...`);
 
-        if (download) {
-          dl = download;
-          const ruta = await dl.path();
-          if (ruta) {
-            const nombre = dl.suggestedFilename() || `reporte_facturas_${anio}_${mes}.xls`;
-            const contenido = fs.readFileSync(ruta);
-            const ext = nombre.split('.').pop().toLowerCase();
-            facturas.push({
-              nombre,
-              contenido: contenido.toString('base64'),
-              tipo: ext,
-              mimeType: ext === 'pdf' ? 'application/pdf' : 'application/vnd.ms-excel',
-              info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
-            });
-            console.log(`  ✓ Reporte descargado (click): ${nombre}`);
+          const [download1] = await Promise.all([
+            page.waitForEvent('download', { timeout: 45000 }).catch(() => null),
+            page.mouse.click(cx, cy, { delay: 100 }).catch(e => console.log('    Error mouse.click:', e.message)),
+          ]);
+
+          if (download1) {
+            dl = download1;
+            const ruta = await dl.path();
+            if (ruta) {
+              const nombre = dl.suggestedFilename() || `reporte_facturas_${anio}_${mes}.xls`;
+              const contenido = fs.readFileSync(ruta);
+              const ext = nombre.split('.').pop().toLowerCase();
+              facturas.push({
+                nombre,
+                contenido: contenido.toString('base64'),
+                tipo: ext,
+                mimeType: ext === 'pdf' ? 'application/pdf' : 'application/vnd.ms-excel',
+                info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
+              });
+              console.log(`  ✓ Reporte descargado (mouse.click): ${nombre}`);
+            }
+          }
+        }
+
+        // Estrategia 3: Click de Playwright con force como último recurso
+        if (facturas.length === 0) {
+          console.log('    Probando linkReporte.click({force: true})...');
+          const [download2] = await Promise.all([
+            page.waitForEvent('download', { timeout: 30000 }).catch(() => null),
+            linkReporte.click({ force: true }).catch(e => console.log('    Error click:', e.message)),
+          ]);
+
+          if (download2) {
+            dl = download2;
+            const ruta = await dl.path();
+            if (ruta) {
+              const nombre = dl.suggestedFilename() || `reporte_facturas_${anio}_${mes}.xls`;
+              const contenido = fs.readFileSync(ruta);
+              const ext = nombre.split('.').pop().toLowerCase();
+              facturas.push({
+                nombre,
+                contenido: contenido.toString('base64'),
+                tipo: ext,
+                mimeType: ext === 'pdf' ? 'application/pdf' : 'application/vnd.ms-excel',
+                info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
+              });
+              console.log(`  ✓ Reporte descargado (force click): ${nombre}`);
+            }
           }
         }
 
