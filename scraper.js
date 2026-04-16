@@ -577,12 +577,111 @@ async function descargarFacturas(anio, mes) {
         }
       }
 
+      // ESTRATEGIA FINAL: Si el reporte falló, descargar XMLs individuales de cada fila
+      if (facturas.length === 0) {
+        console.log('  Plan B: descargar XMLs individuales de cada factura...');
+
+        const cantFilas = hayTabla.count;
+        for (let i = 0; i < Math.min(cantFilas, 50); i++) {
+          try {
+            const linkXmlId = `frmPrincipal:tablaCompRecibidos:${i}:lnkXml`;
+            console.log(`    Fila ${i + 1}/${cantFilas}: POST ${linkXmlId}`);
+
+            const res = await page.evaluate(async (linkId) => {
+              const form = document.getElementById('frmPrincipal');
+              if (!form) return { ok: false, error: 'form' };
+
+              const params = new URLSearchParams();
+              const inputs = form.querySelectorAll('input, select, textarea');
+              inputs.forEach(input => {
+                if (input.name && input.type !== 'submit') {
+                  if (input.type === 'checkbox' || input.type === 'radio') {
+                    if (input.checked) params.append(input.name, input.value);
+                  } else {
+                    params.append(input.name, input.value || '');
+                  }
+                }
+              });
+              params.append(linkId, linkId);
+
+              const action = form.getAttribute('action') || window.location.href;
+
+              try {
+                const resp = await fetch(action, {
+                  method: 'POST',
+                  body: params.toString(),
+                  credentials: 'include',
+                  headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                  },
+                });
+
+                const contentType = resp.headers.get('content-type') || '';
+                const contentDisp = resp.headers.get('content-disposition') || '';
+
+                if (contentType.includes('xml') || contentType.includes('octet-stream') ||
+                    contentDisp.includes('attachment') || contentDisp.includes('filename')) {
+                  const buffer = await resp.arrayBuffer();
+                  const bytes = new Uint8Array(buffer);
+                  let binary = '';
+                  for (let j = 0; j < bytes.byteLength; j++) binary += String.fromCharCode(bytes[j]);
+                  return {
+                    ok: true,
+                    base64: btoa(binary),
+                    contentType,
+                    contentDisp,
+                    size: buffer.byteLength,
+                  };
+                }
+
+                const text = await resp.text();
+                return {
+                  ok: false,
+                  contentType,
+                  preview: text.substring(0, 200),
+                };
+              } catch (e) {
+                return { ok: false, error: e.message };
+              }
+            }, linkXmlId);
+
+            if (res.ok && res.base64 && res.size > 100) {
+              let nombre = `factura_${i + 1}_${anio}_${String(mes).padStart(2, '0')}.xml`;
+              const matchNombre = (res.contentDisp || '').match(/filename[*]?=["']?([^"';]+)/i);
+              if (matchNombre) nombre = matchNombre[1].replace(/['"]/g, '');
+
+              facturas.push({
+                nombre,
+                contenido: res.base64,
+                tipo: 'xml',
+                mimeType: 'application/xml',
+                info: `Factura ${i + 1} de ${anio}-${String(mes).padStart(2, '0')}`,
+              });
+              console.log(`      ✓ ${nombre} (${(res.size / 1024).toFixed(1)}KB)`);
+            } else {
+              console.log(`      ✗ Fila ${i + 1}: ${res.contentType || res.error || 'falló'} ${res.preview?.substring(0, 50) || ''}`);
+              // Si la primera fila falla, no gastar tiempo en las demás
+              if (i === 0) {
+                console.log('      Primera fila falló, abortando plan B');
+                break;
+              }
+            }
+
+            await page.waitForTimeout(500);
+          } catch (err) {
+            console.error(`    Error fila ${i + 1}:`, err.message.substring(0, 100));
+          }
+        }
+      }
+
       page.off('request', requestHandler);
       page.off('response', responseHandler);
 
       if (facturas.length === 0) {
-        console.log('  ✗ No se pudo descargar el reporte. Screenshot...');
+        console.log('  ✗ No se pudo descargar ningún archivo. Screenshot...');
         await page.screenshot({ path: '/tmp/sri-no-descarga.png', fullPage: true }).catch(() => {});
+      } else {
+        console.log(`  ✓ Total facturas descargadas: ${facturas.length}`);
       }
     } else {
       console.log('  NO se encontró link de Descargar reporte. Tomando screenshot...');
