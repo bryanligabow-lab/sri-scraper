@@ -211,6 +211,38 @@ async function descargarFacturas(anio, mes) {
       await page.waitForTimeout(300);
     }
 
+    // Tipo de comprobante = Factura
+    console.log('  Seleccionando tipo: Factura...');
+    const selTipo = page.locator('select[id*="tipoComprobante"], select[id*="comprobante"], select[id*="tipo"]').first();
+    if (await selTipo.count()) {
+      const opcionesDisponibles = await selTipo.locator('option').allTextContents().catch(() => []);
+      console.log('    Opciones tipo:', JSON.stringify(opcionesDisponibles));
+
+      // Intentar seleccionar "Factura" de varias formas
+      let seleccionado = false;
+      for (const intento of [
+        { type: 'label', value: 'Factura' },
+        { type: 'label', value: 'FACTURA' },
+        { type: 'value', value: '1' },
+        { type: 'value', value: '01' },
+      ]) {
+        try {
+          if (intento.type === 'label') {
+            await selTipo.selectOption({ label: intento.value });
+          } else {
+            await selTipo.selectOption(intento.value);
+          }
+          seleccionado = true;
+          console.log(`    Tipo seleccionado: ${intento.value}`);
+          break;
+        } catch {}
+      }
+      if (!seleccionado) console.log('    No se pudo seleccionar tipo');
+      await page.waitForTimeout(500);
+    } else {
+      console.log('    Dropdown de tipo no encontrado');
+    }
+
     // 3. Click en Consultar primero
     console.log('  Click en Consultar...');
     const selectoresConsultar = [
@@ -277,11 +309,27 @@ async function descargarFacturas(anio, mes) {
     }
 
     if (linkReporte) {
-      // Primero verificar si hay resultados en la tabla
-      const hayTabla = await page.locator('[id*="tablaCompRecibidos"] tbody tr, .ui-datatable-data tr').count();
-      console.log(`  Filas en tabla de resultados: ${hayTabla}`);
+      // Esperar un poco más para que termine de cargar la tabla (JSF es lento)
+      await page.waitForTimeout(5000);
 
-      if (hayTabla === 0) {
+      // Primero verificar si hay resultados en la tabla (probamos varios selectores)
+      const hayTabla = await page.evaluate(() => {
+        const selectores = [
+          '[id*="tablaCompRecibidos"] tbody tr',
+          '.ui-datatable-data tr',
+          '[role="row"]',
+          'table.ui-datatable-data tr',
+          '[id*="tabla"] tbody tr',
+        ];
+        for (const sel of selectores) {
+          const filas = document.querySelectorAll(sel);
+          if (filas.length > 0) return { count: filas.length, selector: sel };
+        }
+        return { count: 0, selector: null };
+      });
+      console.log(`  Filas en tabla: ${hayTabla.count} (selector: ${hayTabla.selector || 'ninguno'})`);
+
+      if (hayTabla.count === 0) {
         console.log('  No hay facturas en el período consultado. Screenshot...');
         await page.screenshot({ path: '/tmp/sri-sin-resultados.png', fullPage: true }).catch(() => {});
         await page.close();
