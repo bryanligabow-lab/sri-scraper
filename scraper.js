@@ -341,14 +341,28 @@ async function descargarFacturas(anio, mes) {
         };
       }
 
-      console.log('  Descargando reporte (múltiples clicks + captura HTTP)...');
+      console.log('  Descargando reporte vía form POST directo...');
 
-      // Interceptar cualquier response HTTP que contenga archivo (Excel/XLS/Zip)
+      // Scroll al link para que sea visible
+      await linkReporte.scrollIntoViewIfNeeded().catch(() => {});
+      await page.waitForTimeout(1000);
+
+      // Registrar TODAS las requests y responses para debug
+      const allRequests = [];
+      const allResponses = [];
       let responseCapturada = null;
+
+      const requestHandler = (req) => {
+        allRequests.push({ url: req.url().substring(0, 100), method: req.method() });
+      };
       const responseHandler = async (response) => {
+        const url = response.url();
+        const status = response.status();
         const headers = response.headers();
         const contentType = (headers['content-type'] || '').toLowerCase();
         const contentDisp = (headers['content-disposition'] || '').toLowerCase();
+        allResponses.push({ url: url.substring(0, 100), status, contentType: contentType.substring(0, 50) });
+
         if (
           contentDisp.includes('attachment') ||
           contentDisp.includes('filename') ||
@@ -359,12 +373,12 @@ async function descargarFacturas(anio, mes) {
           contentType.includes('octet-stream') ||
           contentType.includes('application/zip')
         ) {
-          console.log(`    Response capturada: ${response.url().substring(0, 100)}`);
+          console.log(`    Response con archivo: ${url.substring(0, 80)}`);
           console.log(`      content-type: ${contentType}, disposition: ${contentDisp.substring(0, 80)}`);
           try {
             const body = await response.body();
             if (body && body.length > 100) {
-              responseCapturada = { body, contentType, contentDisp, url: response.url() };
+              responseCapturada = { body, contentType, contentDisp, url };
               console.log(`      body capturado: ${(body.length / 1024).toFixed(1)}KB`);
             }
           } catch (e) {
@@ -372,96 +386,149 @@ async function descargarFacturas(anio, mes) {
           }
         }
       };
+      page.on('request', requestHandler);
       page.on('response', responseHandler);
 
-      // Hacer 3 clicks seguidos con diferentes métodos para asegurar que funcione
+      // Método principal: hacer el form POST directo con fetch desde el browser
+      // Esto simula exactamente lo que hace mojarra.jsfcljs pero capturamos la response
       let dl = null;
-      for (let intento = 1; intento <= 3 && !dl && !responseCapturada; intento++) {
-        console.log(`    Intento ${intento}/3...`);
+      console.log('    Extrayendo ViewState y haciendo POST directo...');
 
-        const [download] = await Promise.all([
-          page.waitForEvent('download', { timeout: 20000 }).catch(() => null),
-          (async () => {
-            if (intento === 1) {
-              // Intento 1: Click directo de Playwright
-              await linkReporte.click({ force: true }).catch(e => console.log('    Error click playwright:', e.message));
-            } else if (intento === 2) {
-              // Intento 2: dispatchEvent con MouseEvent
-              await page.evaluate(() => {
-                const link = document.getElementById('frmPrincipal:lnkTxtlistado');
-                if (!link) return;
-                const event = new MouseEvent('click', { view: window, bubbles: true, cancelable: true, button: 0 });
-                link.dispatchEvent(event);
-              }).catch(e => console.log('    Error dispatchEvent:', e.message));
-            } else {
-              // Intento 3: Ejecutar mojarra.jsfcljs directamente
-              await page.evaluate(() => {
-                const form = document.getElementById('frmPrincipal');
-                if (window.mojarra && form) {
-                  window.mojarra.jsfcljs(form, { 'frmPrincipal:lnkTxtlistado': 'frmPrincipal:lnkTxtlistado' }, '');
-                }
-              }).catch(e => console.log('    Error mojarra:', e.message));
-            }
-          })(),
-        ]);
+      const resultadoPost = await page.evaluate(async () => {
+        const form = document.getElementById('frmPrincipal');
+        if (!form) return { ok: false, error: 'form no encontrado' };
 
-        if (download) {
-          dl = download;
-          console.log(`    ✓ Descarga detectada en intento ${intento}`);
-          break;
-        }
+        const viewState = form.querySelector('input[name="javax.faces.ViewState"]');
+        if (!viewState) return { ok: false, error: 'ViewState no encontrado' };
 
-        if (responseCapturada) {
-          console.log(`    ✓ Response capturada en intento ${intento}`);
-          break;
-        }
+        // Recoger todos los datos del form
+        const formData = new FormData(form);
+        // Agregar el parámetro que identifica qué link se clickeó
+        formData.append('frmPrincipal:lnkTxtlistado', 'frmPrincipal:lnkTxtlistado');
 
-        await page.waitForTimeout(2000);
-      }
+        const action = form.getAttribute('action') || window.location.href;
 
-      page.off('response', responseHandler);
-
-      // Guardar el archivo desde cualquiera de los dos métodos
-      let archivoGuardado = false;
-
-      if (dl) {
-        const ruta = await dl.path();
-        if (ruta) {
-          const nombre = dl.suggestedFilename() || `reporte_facturas_${anio}_${mes}.xls`;
-          const contenido = fs.readFileSync(ruta);
-          const ext = nombre.split('.').pop().toLowerCase();
-
-          facturas.push({
-            nombre,
-            contenido: contenido.toString('base64'),
-            tipo: ext,
-            mimeType: ext === 'pdf' ? 'application/pdf' : ext === 'xml' ? 'application/xml' : 'application/vnd.ms-excel',
-            info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
+        try {
+          const resp = await fetch(action, {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+            headers: {
+              'Faces-Request': 'partial/ajax',
+            },
           });
-          console.log(`  ✓ Reporte descargado (download): ${nombre} (${(contenido.length / 1024).toFixed(1)}KB)`);
-          archivoGuardado = true;
-        }
-      }
 
-      if (!archivoGuardado && responseCapturada) {
+          const contentType = resp.headers.get('content-type') || '';
+          const contentDisp = resp.headers.get('content-disposition') || '';
+
+          // Si es un archivo, lo convertimos a base64
+          if (contentType.includes('excel') || contentType.includes('octet-stream') ||
+              contentType.includes('ms-excel') || contentType.includes('spreadsheet') ||
+              contentDisp.includes('attachment') || contentDisp.includes('filename')) {
+            const buffer = await resp.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+            return {
+              ok: true,
+              base64: btoa(binary),
+              contentType,
+              contentDisp,
+              size: buffer.byteLength,
+            };
+          }
+
+          const text = await resp.text();
+          return {
+            ok: false,
+            status: resp.status,
+            contentType,
+            contentDisp,
+            bodyPreview: text.substring(0, 500),
+          };
+        } catch (e) {
+          return { ok: false, error: e.message };
+        }
+      }).catch(e => ({ ok: false, error: 'evaluate error: ' + e.message }));
+
+      console.log('    Resultado POST:', JSON.stringify({
+        ok: resultadoPost.ok,
+        contentType: resultadoPost.contentType?.substring(0, 50),
+        contentDisp: resultadoPost.contentDisp?.substring(0, 80),
+        size: resultadoPost.size,
+        status: resultadoPost.status,
+        error: resultadoPost.error,
+        preview: resultadoPost.bodyPreview?.substring(0, 100),
+      }, null, 2));
+
+      if (resultadoPost.ok && resultadoPost.base64) {
         // Extraer nombre del content-disposition
         let nombre = `reporte_facturas_${anio}_${String(mes).padStart(2, '0')}.xls`;
-        const matchNombre = responseCapturada.contentDisp.match(/filename[*]?=["']?([^"';]+)/i);
+        const matchNombre = (resultadoPost.contentDisp || '').match(/filename[*]?=["']?([^"';]+)/i);
         if (matchNombre) nombre = matchNombre[1].replace(/['"]/g, '');
 
         const ext = nombre.split('.').pop().toLowerCase();
         facturas.push({
           nombre,
-          contenido: responseCapturada.body.toString('base64'),
+          contenido: resultadoPost.base64,
           tipo: ext,
-          mimeType: responseCapturada.contentType || 'application/vnd.ms-excel',
+          mimeType: resultadoPost.contentType || 'application/vnd.ms-excel',
           info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
         });
-        console.log(`  ✓ Reporte guardado (HTTP response): ${nombre} (${(responseCapturada.body.length / 1024).toFixed(1)}KB)`);
-        archivoGuardado = true;
+        console.log(`  ✓ Reporte descargado (POST directo): ${nombre} (${(resultadoPost.size / 1024).toFixed(1)}KB)`);
+      } else {
+        console.log('  ✗ POST directo falló. Intentando click de Playwright como fallback...');
+
+        // Fallback: click de Playwright con force
+        const [download] = await Promise.all([
+          page.waitForEvent('download', { timeout: 30000 }).catch(() => null),
+          linkReporte.click({ force: true }).catch(e => console.log('    Error click:', e.message)),
+        ]);
+
+        if (download) {
+          dl = download;
+          const ruta = await dl.path();
+          if (ruta) {
+            const nombre = dl.suggestedFilename() || `reporte_facturas_${anio}_${mes}.xls`;
+            const contenido = fs.readFileSync(ruta);
+            const ext = nombre.split('.').pop().toLowerCase();
+            facturas.push({
+              nombre,
+              contenido: contenido.toString('base64'),
+              tipo: ext,
+              mimeType: ext === 'pdf' ? 'application/pdf' : 'application/vnd.ms-excel',
+              info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
+            });
+            console.log(`  ✓ Reporte descargado (click): ${nombre}`);
+          }
+        }
+
+        if (responseCapturada) {
+          let nombre = `reporte_facturas_${anio}_${String(mes).padStart(2, '0')}.xls`;
+          const matchNombre = (responseCapturada.contentDisp || '').match(/filename[*]?=["']?([^"';]+)/i);
+          if (matchNombre) nombre = matchNombre[1].replace(/['"]/g, '');
+          const ext = nombre.split('.').pop().toLowerCase();
+          facturas.push({
+            nombre,
+            contenido: responseCapturada.body.toString('base64'),
+            tipo: ext,
+            mimeType: responseCapturada.contentType || 'application/vnd.ms-excel',
+            info: `Reporte facturas recibidas ${anio}-${String(mes).padStart(2, '0')}`,
+          });
+          console.log(`  ✓ Reporte guardado (HTTP response): ${nombre}`);
+        }
+
+        // Si todavía no hay archivo, loggear las últimas requests/responses para debug
+        if (facturas.length === 0) {
+          console.log('  Últimas 10 requests:', JSON.stringify(allRequests.slice(-10), null, 2));
+          console.log('  Últimas 10 responses:', JSON.stringify(allResponses.slice(-10), null, 2));
+        }
       }
 
-      if (!archivoGuardado) {
+      page.off('request', requestHandler);
+      page.off('response', responseHandler);
+
+      if (facturas.length === 0) {
         console.log('  ✗ No se pudo descargar el reporte. Screenshot...');
         await page.screenshot({ path: '/tmp/sri-no-descarga.png', fullPage: true }).catch(() => {});
       }
